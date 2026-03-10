@@ -162,11 +162,11 @@ vprintfl(const char * fmt, va_list ap) __reentrant
 				static char __idata buffer[12]; /* 37777777777(oct) */
 				char __idata * stri;
 
-				if (unsigned_flag) {
-					_ultoa(val, buffer, radix);
-				} else {
-					_ltoa(val, buffer, radix);
-				}
+					if (unsigned_flag) {
+						__ultoa(val, buffer, radix);
+					} else {
+						__ltoa(val, buffer, radix);
+					}
 				stri = buffer;
 				while (*stri) {
 					output_char(*stri);
@@ -190,4 +190,3 @@ printfl(const char *fmt, ...) __reentrant
 	va_start(ap,fmt);
 	vprintfl(fmt, ap);
 }
-

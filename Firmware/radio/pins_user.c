@@ -35,6 +35,8 @@
 #include "pins_user.h"
 #include "tdm.h"
 
+#if PIN_MAX > 0
+
 // pin_values defined as extern in parameters
 
 __code const struct pins_user_map {
@@ -259,3 +261,54 @@ pins_user_get_adc(__pdata uint8_t pin)
 	}
 	return PIN_ERROR;
 }
+
+#else
+
+void
+pins_user_init(void)
+{
+}
+
+void
+pin_user_change_check(void)
+{
+}
+
+bool
+pins_user_set_io(__pdata uint8_t pin, bool in_out)
+{
+	(void)pin;
+	(void)in_out;
+	return false;
+}
+
+bool
+pins_user_get_io(__pdata uint8_t pin)
+{
+	(void)pin;
+	return false;
+}
+
+bool
+pins_user_set_value(__pdata uint8_t pin, bool high_low)
+{
+	(void)pin;
+	(void)high_low;
+	return false;
+}
+
+bool
+pins_user_get_value(__pdata uint8_t pin)
+{
+	(void)pin;
+	return false;
+}
+
+uint8_t
+pins_user_get_adc(__pdata uint8_t pin)
+{
+	(void)pin;
+	return PIN_ERROR;
+}
+
+#endif

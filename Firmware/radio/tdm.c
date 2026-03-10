@@ -1183,7 +1183,7 @@ tdm_init(void)
 		// and adds 4 bytes
 		packet_latency += 4*ticks_per_byte;
 	} else {
-		max_data_packet_length = MAX_PACKET_LENGTH - sizeof(trailer);
+		max_data_packet_length = (uint8_t)(MAX_PACKET_LENGTH - sizeof(trailer));
 	}
 
 	// set the silence period to between changing channels
@@ -1264,4 +1264,3 @@ tdm_report_timing(void)
 	printf("[%u] tx_window_width: %u\n", nodeId, (unsigned)tx_window_width); delay_msec(1);
 	printf("[%u] max_data_packet_length: %u\n", nodeId, (unsigned)max_data_packet_length); delay_msec(1);
 }
-
