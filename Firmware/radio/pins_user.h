@@ -40,6 +40,8 @@
 // Pin rfd900a  Mapping
 #ifdef BOARD_rfd900a
 #define PINS_USER_MAX 6
+#else
+#define PINS_USER_MAX 0
 #endif
 
 #define PINS_ABS_MAX 10

@@ -418,12 +418,13 @@ serial_read_space(void)
 	return space;
 }
 
-void
-putchar(char c) __reentrant
+int
+putchar(int c) __reentrant
 {
 	if (c == '\n')
 		_serial_write('\r');
 	_serial_write(c);
+	return c;
 }
 
 
@@ -492,4 +493,3 @@ void serial_device_set_speed(register uint8_t speed)
 	// needed for packet framing timeouts
 	packet_set_serial_speed(speed*125UL);	
 }
-
