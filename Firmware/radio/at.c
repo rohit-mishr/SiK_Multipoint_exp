@@ -205,9 +205,10 @@ at_timer(void)
 				at_cmd_len = 2;
 				at_cmd_ready = true;
 				break;
-			default:
-				// should never happen, but otherwise harmless
-			}
+				default:
+					// should never happen, but otherwise harmless
+					break;
+				}
 		}
 	}
 }
@@ -457,6 +458,10 @@ at_ampersand(void)
 static void
 at_p (void)
 {
+#if PIN_MAX == 0
+	at_error();
+	return;
+#else
 	__pdata uint8_t pinId;
 	if(at_cmd[3] == 'P')
 	{
@@ -523,9 +528,10 @@ at_p (void)
 			at_error();
 			return;
 	}
-	
-	at_ok();
-}
+		
+		at_ok();
+#endif
+	}
 
 static void
 at_plus(void)
