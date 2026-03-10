@@ -78,9 +78,11 @@ __code const struct parameter_info {
 /// hold all the parameters when we're rewriting the scratchpad
 /// page anyway.
 ///
-__code const pins_user_info_t pins_defaults = PINS_USER_INFO_DEFAULT;
 __xdata param_t	 parameter_values[PARAM_MAX];
+#if PIN_MAX > 0
+__code const pins_user_info_t pins_defaults = PINS_USER_INFO_DEFAULT;
 pins_user_info_t pin_values[PIN_MAX];
+#endif
 
 static bool
 param_check(__pdata enum ParamID id, __data uint32_t val)
@@ -241,15 +243,17 @@ __critical {
 
 	i+=2;
 	
-	// loop reading the pin_values array (sizeof pin_values, parameters and checksum)
-	for (; i < sizeof(pin_values)+sizeof(parameter_values)+3; i++) {
-		((uint8_t *)pin_values)[i-sizeof(parameter_values)-3] = flash_read_scratch(i);
-	}
-	
-	// verify pin_values checksum
-	sum = flash_read_scratch(i)<<8 | flash_read_scratch(i+1);
-	if (sum != crc16(sizeof(pin_values), ((__xdata uint8_t *)pin_values)))
-		return false;
+#if PIN_MAX > 0
+		// loop reading the pin_values array (sizeof pin_values, parameters and checksum)
+		for (; i < sizeof(pin_values)+sizeof(parameter_values)+3; i++) {
+			((uint8_t *)pin_values)[i-sizeof(parameter_values)-3] = flash_read_scratch(i);
+		}
+		
+		// verify pin_values checksum
+		sum = flash_read_scratch(i)<<8 | flash_read_scratch(i+1);
+		if (sum != crc16(sizeof(pin_values), ((__xdata uint8_t *)pin_values)))
+			return false;
+#endif
 	
 	// decide whether we read a supported version of the structure
 	if (param_get(PARAM_FORMAT) != PARAM_FORMAT_CURRENT) {
@@ -292,16 +296,18 @@ __critical {
 	
 	i+=2;
 	
-	// save pin_values to the scratch page (sizeof pin_values, parameters and checksum)
-	for (; i < sizeof(pin_values)+sizeof(parameter_values)+3; i++) {
-		flash_write_scratch(i, ((uint8_t *)pin_values)[i-sizeof(parameter_values)-3]);
-	}
+#if PIN_MAX > 0
+		// save pin_values to the scratch page (sizeof pin_values, parameters and checksum)
+		for (; i < sizeof(pin_values)+sizeof(parameter_values)+3; i++) {
+			flash_write_scratch(i, ((uint8_t *)pin_values)[i-sizeof(parameter_values)-3]);
+		}
+			
+		sum = crc16(sizeof(pin_values), ((__xdata uint8_t *)pin_values));
 		
-	sum = crc16(sizeof(pin_values), ((__xdata uint8_t *)pin_values));
-	
-	// write checksum
-	flash_write_scratch(i, sum>>8);
-	flash_write_scratch(i+1, sum&0xFF);
+		// write checksum
+		flash_write_scratch(i, sum>>8);
+		flash_write_scratch(i+1, sum&0xFF);
+#endif
 }
 
 void
@@ -315,12 +321,14 @@ param_default(void)
 		
 	}
 
-	for (i = 0; i < PIN_MAX; i ++) {
-		pin_values[i].node_mirror = pins_defaults.node_mirror;
-		pin_values[i].output = pins_defaults.output;
-		pin_values[i].pin_dir = pins_defaults.pin_dir;
-		pin_values[i].pin_mirror = pins_defaults.pin_mirror;
-	}
+#if PIN_MAX > 0
+		for (i = 0; i < PIN_MAX; i ++) {
+			pin_values[i].node_mirror = pins_defaults.node_mirror;
+			pin_values[i].output = pins_defaults.output;
+			pin_values[i].pin_dir = pins_defaults.pin_dir;
+			pin_values[i].pin_mirror = pins_defaults.pin_mirror;
+		}
+#endif
 }
 
 void

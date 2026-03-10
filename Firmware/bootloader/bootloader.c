@@ -69,7 +69,7 @@ bool		app_valid;
 void
 bl_main(void)
 {
-	uint8_t		i;
+	uint16_t	i;
 
 	// Do early hardware init
 	hardware_init();
