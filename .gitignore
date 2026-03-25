@@ -1,6 +1,11 @@
 .metadata
 Firmware/bootloader/obj
 Firmware/radio/obj
+# Python cache — ignore all
+__pycache__/
+*.pyc
+*.pyo
+
 Firmware/.cproject
 Firmware/.project
 SiKUploader/uploader/bin
@@ -12,3 +17,15 @@ SiK_Firmware.sublime-workspace
 Firmware/Docs.
 
 *.xcodeproj
+
+# Stress test / experimental tools (not part of released firmware)
+Firmware/tools/stress_sender.py
+Firmware/tools/stress_test.py
+Firmware/tools/node_sender.py
+Firmware/tools/node_monitor.py
+Firmware/tools/hello_sender.py
+Firmware/tools/hello_test.py
+Firmware/tools/analyse_log.py
+Firmware/tools/sik_at.py
+Firmware/tools/test_udp.py
+
