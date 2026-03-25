@@ -38,6 +38,7 @@
 
 #include <stdarg.h>
 #include "radio.h"
+#include "hostmux.h"
 #include "tdm.h"
 #include "timer.h"
 #include "freq_hopping.h"
@@ -410,7 +411,10 @@ radio_init(void)
 	
 	// setup sync from any node
 	tdm_set_sync_any(param_get(PARAM_SYNCANY));
-		
+
+	// setup base-host mux mode
+	hostmux_set_mode(param_get(PARAM_HOSTMUX));
+			
 	// setup transmit power
 	radio_set_transmit_power(txpower);
 	
@@ -428,4 +432,3 @@ radio_init(void)
 	// initialise TDM system
 	tdm_init();
 }
-

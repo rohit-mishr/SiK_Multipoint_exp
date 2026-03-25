@@ -35,6 +35,7 @@
 
 #include "serial.h"
 #include "packet.h"
+#include "hostmux.h"
 
 // Serial rx/tx buffers.
 //
@@ -119,8 +120,10 @@ serial_interrupt(void) __interrupt(INTERRUPT_UART0)
 				at_input(c);
 			}
 		} else {
-			// run the byte past the +++ detector
-			at_plus_detector(c);
+			if (!hostmux_enabled()) {
+				// run the byte past the +++ detector
+				at_plus_detector(c);
+			}
 
 			// and queue it for general reception
 			if (BUF_NOT_FULL(rx)) {
