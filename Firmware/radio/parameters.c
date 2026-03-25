@@ -41,6 +41,7 @@
 
 
 #include "radio.h"
+#include "hostmux.h"
 #include "tdm.h"
 #include "crc.h"
 #include <flash_layout.h>
@@ -66,10 +67,11 @@ __code const struct parameter_info {
 /*12*/  {"LBT_RSSI",  0},
 /*13*/  {"MANCHESTER",  0},
 /*14*/  {"RTSCTS",  1},
-/*15*/  {"NODEID",  1}, // The base node is '1' lets make new nodes 2
+/*15*/  {"NODEID",  1}, // node 0 is the base; new nodes default to 1
 /*16*/  {"NODEDESTINATION", 65535},
 /*17*/  {"SYNCANY",  0}, // The amount of nodes in the network, this may could become auto discovery later.
 /*18*/  {"NODECOUNT",  2}, // The amount of nodes in the network, this may could become auto discovery later.
+/*19*/  {"HOSTMUX",  0},
 };
 
 /// In-RAM parameter store.
@@ -119,7 +121,7 @@ param_check(__pdata enum ParamID id, __data uint32_t val)
 			
 		// Can not assign id above 32,767 upper most bit is sync
 		case PARAM_NODECOUNT:
-			if(val < 2 && val > 0x8000)
+			if (val < 2 || val > 0x7FFF)
 			  return false;
 			break;
 		
@@ -128,13 +130,14 @@ param_check(__pdata enum ParamID id, __data uint32_t val)
 				return false;
 			break;
 
-		case PARAM_ECC:
-		case PARAM_MAVLINK:
-		case PARAM_OPPRESEND:
-		case PARAM_SYNCANY:
-			// boolean 0/1 only
-			if (val > 1)
-				return false;
+			case PARAM_ECC:
+			case PARAM_MAVLINK:
+			case PARAM_OPPRESEND:
+			case PARAM_SYNCANY:
+			case PARAM_HOSTMUX:
+				// boolean 0/1 only
+				if (val > 1)
+					return false;
 			break;
 
 		default:
@@ -189,9 +192,18 @@ param_set(__data enum ParamID param, __pdata param_t value)
 			value = feature_rtscts?1:0;
 			break;
 
-		case PARAM_NODEID:
-			radio_set_node_id(value);
-			break;
+			case PARAM_NODEID:
+				radio_set_node_id(value);
+				{
+					/* hostmux_set_mode() calls hostmux_reset_parser() which
+					 * sets at_mode_active = false, silently kicking the user
+					 * out of AT mode.  Save and restore the flag so AT&W and
+					 * ATZ still work after changing the node ID. */
+					bool _at = at_mode_active;
+					hostmux_set_mode(parameter_values[PARAM_HOSTMUX]);
+					at_mode_active = _at;
+				}
+				break;
 				
 		case PARAM_NODECOUNT:
 			tdm_set_node_count(value);
@@ -201,12 +213,23 @@ param_set(__data enum ParamID param, __pdata param_t value)
 			tdm_set_node_destination(value);
 			break;
 				
-		case PARAM_SYNCANY:
-			tdm_set_sync_any(value);
-			break;
-			
-		default:
-			break;
+			case PARAM_SYNCANY:
+				tdm_set_sync_any(value);
+				break;
+
+			case PARAM_HOSTMUX:
+			hostmux_set_mode(value);
+		/* IMPORTANT: assign the new value into the array NOW,
+		 * before calling param_save(). The generic assignment
+		 * at the bottom of param_set() runs AFTER this switch,
+		 * so if we called param_save() without this line we would
+		 * be saving the old value (0) to flash, not the new one. */
+		parameter_values[PARAM_HOSTMUX] = value;
+		param_save();
+		break;
+				
+			default:
+				break;
 	}
 
 	parameter_values[param] = value;

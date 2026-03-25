@@ -41,6 +41,7 @@
 #include "packet.h"
 #include "golay.h"
 #include "freq_hopping.h"
+#include "hostmux.h"
 #include "crc.h"
 
 /// the state of the tdm system
@@ -555,6 +556,7 @@ tdm_serial_loop(void)
 {
 	__pdata uint16_t last_t = timer2_tick();
 	__pdata uint16_t last_link_update = last_t;
+	__pdata uint8_t destination_from_hostmux;
 
 	_canary = 42;
 
@@ -562,6 +564,7 @@ tdm_serial_loop(void)
 		__pdata uint8_t	len;
 		__pdata uint16_t tnow, tdelta;
 		__pdata uint8_t max_xmit;
+		destination_from_hostmux = false;
 
 		if (_canary != 42) {
 			panic("stack blown\n");
@@ -575,8 +578,9 @@ tdm_serial_loop(void)
 		PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
 		
-		// give the AT command processor a chance to handle a command
-		at_command();
+			// give the AT command processor a chance to handle a command
+			at_command();
+			hostmux_poll();
 
 		// display test data if needed
 		if (test_display) {
@@ -676,15 +680,19 @@ tdm_serial_loop(void)
 					{
 						handle_at_command(len);
 					}
-				} else if (len != 0 && 
-					   !packet_is_duplicate(len, pbuf, trailer.resend) &&
-					   !at_mode_active) {
-					// its user data - send it out the serial port
-					LED_ACTIVITY = LED_ON;
-					serial_write_buf(pbuf, len);
-					LED_ACTIVITY = LED_OFF;
+					} else if (len != 0 && 
+						   !packet_is_duplicate(len, pbuf, trailer.resend) &&
+						   !at_mode_active) {
+						// its user data - send it out the serial port
+						LED_ACTIVITY = LED_ON;
+						if (hostmux_enabled()) {
+							hostmux_deliver(trailer.nodeid, pbuf, len);
+						} else {
+							serial_write_buf(pbuf, len);
+						}
+						LED_ACTIVITY = LED_OFF;
+					}
 				}
-			}
 			continue;
 		}
 		
@@ -849,13 +857,20 @@ tdm_serial_loop(void)
 				trailer.command = 1;
 				nodeDestination = send_at_command_to;
 				send_at_command = false;
-			} else {
-				// get a packet from the serial port
-				len = packet_get_next(max_xmit, pbuf);
-				trailer.command = packet_is_injected();
-				
-				// If it's a AT return packet, set the return address
-				if(trailer.command) {
+				} else {
+					// get a packet from the serial port
+					if (hostmux_enabled()) {
+						len = hostmux_get_next(max_xmit, pbuf, &nodeDestination);
+						destination_from_hostmux = (len != 0);
+						trailer.command = 0;
+					} else {
+						len = packet_get_next(max_xmit, pbuf);
+						trailer.command = packet_is_injected();
+					}
+					
+					// If it's a AT return packet, set the return address
+					if(trailer.command) {
+					destination_from_hostmux = false;
 					nodeDestination = send_at_command_to;
 					packet_ati5_inject(ati5_id++);
 				}
@@ -927,10 +942,14 @@ tdm_serial_loop(void)
 			if (len != 0 && trailer.window != 0) {
 				// show the user that we're sending real data
 				LED_ACTIVITY = LED_ON;
-				nodeDestination = paramNodeDestination;
+				if (!destination_from_hostmux) {
+					nodeDestination = paramNodeDestination;
+				}
 			}
 			else { // Default to broadcast
-				nodeDestination = 0xFFFF; 
+				if (!destination_from_hostmux) {
+					nodeDestination = 0xFFFF;
+				}
 			}
 		}
 
@@ -1227,6 +1246,7 @@ tdm_init(void)
 		i = max_data_packet_length;
 	}
 	packet_set_max_xmit(i);
+	hostmux_set_max_payload(max_data_packet_length);
 
 	// Clear Values..
 	trailer.nodeid  = 0xFFFF;
