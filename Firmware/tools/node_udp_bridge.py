@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import time
 
 logger = logging.getLogger("node_bridge")
 logging.basicConfig(
@@ -245,7 +246,13 @@ class _SerialReader:
     def _read(self) -> bytes:
         try:
             w = self._ser.in_waiting
-            return self._ser.read(w if w > 0 else 1)
+            if w > 0:
+                return self._ser.read(w)
+            # Nothing available — yield for 5 ms to avoid busy-spinning
+            # and prevent blocking the executor thread for up to 0.5 s,
+            # which would delay time-critical MAVLink heartbeat packets.
+            time.sleep(0.005)
+            return b""
         except Exception:
             return b""
 
@@ -316,7 +323,7 @@ async def _main():
     ser = _serial.Serial(
         port=args.port,
         baudrate=args.baud,
-        timeout=0.5,
+        timeout=0,          # non-blocking: eliminates 0-500 ms bridge-induced jitter
         dsrdtr=False,
     )
 
