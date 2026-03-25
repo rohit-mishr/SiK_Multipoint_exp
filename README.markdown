@@ -50,6 +50,14 @@ This is the number of nodes in the nework, so if you have 3 nodes (Id's 0, 1, 2)
 In the next revision of the software this could disapear and become auto detect.
 The easiest way to determin the correct node count for the network is - max(NODEID)+1
 
+###### S19: HOSTMUX
+Base-host serial framing mode. Set this to `1` on the base node when using the COBS host mux daemon.
+Leave it as `0` on remotes so their UART stays transparent for the flight controller.
+When `HOSTMUX=1`, the base data UART is a binary COBS stream, so classic `+++` escape detection is disabled on that port.
+Use the daemon's `base_at` PTY to issue AT commands while mux mode stays enabled.
+On Linux, `Firmware/tools/multipoint_mux.py` defaults to nodes `1..4` and creates one `base_at` PTY plus four data PTYs at startup. It prints the fixed `portN -> /dev/pts/X` mapping on launch.
+On native Windows, use `Firmware/tools/multipoint_mux_windows.py` with pre-created virtual COM port pairs instead of PTYs.
+
 ### Diffrent RT Syntax
 
 All RT's are sent to every node by default, to send them to one node only folow the command with a comma and node id.
