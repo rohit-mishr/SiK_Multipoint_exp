@@ -590,7 +590,7 @@ tdm_serial_loop(void)
 
 		if (seen_mavlink && feature_mavlink_framing && !at_mode_active) {
 			seen_mavlink = false;
-			MAVLink_report();
+			MAVLink_report(); // COBS-safe: now routes via hostmux_deliver() instead of raw serial_write_buf()
 		}
 
 		// get the time before we check for a packet coming in

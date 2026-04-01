@@ -274,11 +274,19 @@ class _SerialReader:
                 continue
 
             if ftype == FRAME_FROM_NODE:
-                proto = self._nodes.get(node_id)
-                if proto:
-                    proto.forward(payload)
+                if node_id == 0:
+                    # NodeID 0 = Base Radio status (RADIO_STATUS / RSSI).
+                    # Broadcast to ALL active GCS ports so every drone's
+                    # dashboard can display the radio link health.
+                    for proto in self._nodes.values():
+                        proto.forward(payload)
+                    logger.debug(f"[Node 0] RADIO_STATUS broadcast ({len(payload)} B) -> {len(self._nodes)} GCS port(s)")
                 else:
-                    logger.debug(f"[Serial] Frame from unregistered NodeID {node_id}")
+                    proto = self._nodes.get(node_id)
+                    if proto:
+                        proto.forward(payload)
+                    else:
+                        logger.debug(f"[Serial] Frame from unregistered NodeID {node_id}")
 
             elif ftype == FRAME_AT_REPLY:
                 self._ctrl.send_reply(payload)

@@ -36,6 +36,8 @@
 #include "radio.h"
 #include "packet.h"
 #include "timer.h"
+#include "hostmux.h"
+#include "tdm.h"
 
 extern __xdata uint8_t pbuf[MAX_PACKET_LENGTH];
 static __pdata uint8_t seqnum;
@@ -171,10 +173,18 @@ void MAVLink_report(void)
 	}
 	mavlink_crc();
 
-	if (serial_write_space() < sizeof(struct mavlink_RADIO_v09)+8) {
-		// don't cause an overflow
-		return;
-	}
+	__pdata uint8_t pkt_len = sizeof(struct mavlink_RADIO_v09) + 8;
 
-	serial_write_buf(pbuf, sizeof(struct mavlink_RADIO_v09)+8);
+	if (hostmux_enabled()) {
+		// COBS mode: deliver via hostmux so the Python bridge receives
+		// a properly framed packet tagged with NodeID 0 (Base Radio).
+		// This prevents raw MAVLink bytes from corrupting the COBS stream.
+		hostmux_deliver(BASE_NODEID, pbuf, pkt_len);
+	} else {
+		// Legacy (non-hostmux) connection — send raw as before.
+		if (serial_write_space() < pkt_len) {
+			return;
+		}
+		serial_write_buf(pbuf, pkt_len);
+	}
 }
