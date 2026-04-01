@@ -10,5 +10,13 @@ Firmware/obj
 SiK_Firmware.sublime-project
 SiK_Firmware.sublime-workspace
 Firmware/Docs.
-
+Firmware/tools/__pycache__/
+Firmware/tools/analyse_log.py
+Firmware/tools/hello_sender.py
+Firmware/tools/hello_test.py
+Firmware/tools/node_monitor.py
+Firmware/tools/node_sender.py
+Firmware/tools/sik_at.py
+Firmware/tools/stress_sender.py
+Firmware/tools/stress_test.py
 *.xcodeproj
