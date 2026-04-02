@@ -169,6 +169,12 @@ static __pdata char remote_at_cmd[AT_CMD_MAXLEN + 1];
 // local nodeCount
 __pdata static uint16_t nodeCount;
 
+// TDM drift diagnostic: the node scheduled for the current receive slot.
+// Updated in tdm_state_update() on every slot transition to TDM_RECEIVE.
+// nodeCount is (user_nodes + 1) to include the sync slot, so data slots
+// are 0 .. nodeCount-2.  nodeTransmitSeq is already post-increment here.
+__pdata static uint16_t tdm_scheduled_node;
+
 /// display RSSI output
 void
 tdm_show_rssi(void)
@@ -252,6 +258,14 @@ tdm_state_update(__pdata uint16_t tdelta)
 		else {
 			// Check for Bonus?
 			tdm_state = TDM_RECEIVE; // If there are other nodes yet to transmit lets hear them first
+			// Track which node is scheduled for this slot (base node only).
+			// nodeTransmitSeq was incremented before the comparison above, so the
+			// slot that just started is (nodeTransmitSeq - 1) mod (nodeCount - 1).
+			if (nodeId == BASE_NODEID) {
+				tdm_scheduled_node = (nodeTransmitSeq == 0)
+					? (uint16_t)(nodeCount - 2)
+					: (uint16_t)((nodeTransmitSeq - 1) % (nodeCount - 1));
+			}
 		}
 #ifdef DEBUG_PINS_SYNC
 		if(tdm_state == TDM_SYNC) {
@@ -676,12 +690,24 @@ tdm_serial_loop(void)
 					{
 						handle_at_command(len);
 					}
-				} else if (len != 0 && 
+				} else if (len != 0 &&
 					   !packet_is_duplicate(len, pbuf, trailer.resend) &&
 					   !at_mode_active) {
-					// its user data - send it out the serial port
 					LED_ACTIVITY = LED_ON;
-					serial_write_buf(pbuf, len);
+					if (nodeId == BASE_NODEID) {
+						// Drift diagnostic: discard payload, emit slot mapping.
+						// Format: "<tdm_slot> -> <scheduled_node> -> <actual_node>\n"
+						// tdm_slot      = current TDM slot index (nodeTransmitSeq - 1)
+						// scheduled_node = the node whose slot this should be
+						// actual_node    = the node that actually transmitted (trailer.nodeid)
+						printf("%u -> %u -> %u\n",
+							(unsigned)tdm_scheduled_node,
+							(unsigned)tdm_scheduled_node,
+							(unsigned)(trailer.nodeid & 0x7FFF));
+					} else {
+						// Non-base nodes forward data normally
+						serial_write_buf(pbuf, len);
+					}
 					LED_ACTIVITY = LED_OFF;
 				}
 			}
