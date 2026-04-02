@@ -96,6 +96,9 @@ static __bit blink_state;
 static __bit received_sync;
 __pdata static uint8_t sync_count; // the amount of successfull times synced 
 static __bit sync_any;
+// Per-slot flag: set true when a data packet is received in the current slot.
+// Reset at every slot transition. Used to detect silent (missed) slots.
+static __bit slot_packet_received;
 
 /// the latency in 16usec timer2 ticks for sending a zero length packet
 __pdata static uint16_t packet_latency;
@@ -246,6 +249,15 @@ tdm_state_update(__pdata uint16_t tdelta)
 		// Tickle Watchdog
 		PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
+		// If we are leaving a receive slot with no packet received, log it.
+		// This surfaces completely silent slots (drone didn't transmit at all).
+		if (tdm_state == TDM_RECEIVE && nodeId == BASE_NODEID && !slot_packet_received) {
+			printf("%u -> %u -> NONE\n",
+				(unsigned)tdm_scheduled_node,
+				(unsigned)tdm_scheduled_node);
+		}
+		// Reset the per-slot received flag for the incoming slot.
+		slot_packet_received = false;
 		if ((nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) && (nodeTransmitSeq++ % nodeCount) == nodeId) {
 			tdm_state = TDM_TRANSMIT;
 			nodeTransmitSeq %= nodeCount;
@@ -700,6 +712,7 @@ tdm_serial_loop(void)
 						// tdm_slot      = current TDM slot index (nodeTransmitSeq - 1)
 						// scheduled_node = the node whose slot this should be
 						// actual_node    = the node that actually transmitted (trailer.nodeid)
+						slot_packet_received = true;
 						printf("%u -> %u -> %u\n",
 							(unsigned)tdm_scheduled_node,
 							(unsigned)tdm_scheduled_node,
