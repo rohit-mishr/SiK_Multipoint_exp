@@ -1228,7 +1228,11 @@ tdm_init(void)
 	}
 
 	// set the silence period to between changing channels
-	silence_period = 2*packet_latency;
+	// Increased from 2x to 4x packet_latency to provide more guard time
+	// between slots, absorbing oscillator drift that causes slot collisions
+	// (observed as "N -> N -> M" in TDM drift diagnostic log).
+	// Trade-off: ~2 extra packet_latency of idle time per slot.
+	silence_period = 4*packet_latency;
 
 	// set the transmit window to allow for 2 full sized packets
 	window_width = 2*((max_data_packet_length*(uint32_t)ticks_per_byte)+packet_latency) + silence_period + packet_latency;
