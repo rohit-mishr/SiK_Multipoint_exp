@@ -235,6 +235,9 @@ static uint16_t flight_time_estimate(__pdata uint8_t packet_len)
 static void
 tdm_state_update(__pdata uint16_t tdelta)
 {
+	// Interleaved-heartbeat TDM: local scratch variables.
+	__pdata uint16_t slot;
+	__pdata uint16_t drone_id;
 	// update the amount of time we are waiting for a preamble
 	// to turn into a real packet
 	if (tdelta > transmit_wait) {
@@ -260,26 +263,46 @@ tdm_state_update(__pdata uint16_t tdelta)
 		}
 		// Reset the per-slot received flag for the incoming slot.
 		slot_packet_received = false;
-		if ((nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) && (nodeTransmitSeq++ % nodeCount) == nodeId) {
-			tdm_state = TDM_TRANSMIT;
-			nodeTransmitSeq %= nodeCount;
-		}
-		// We need to -1 from nodeTransmitSeq as it was incremented above
-		// Remember we have incremented nodeCount to allow for the sync period
-		else if (nodeTransmitSeq < 0x8000 && (nodeTransmitSeq-1 % nodeCount) == nodeCount-1) {
-			tdm_state = TDM_SYNC;
-		}
-		else {
-			// Check for Bonus?
-			tdm_state = TDM_RECEIVE; // If there are other nodes yet to transmit lets hear them first
-			// Track which node is scheduled for this slot (base node only).
-			// nodeTransmitSeq was incremented before the comparison above, so the
-			// slot that just started is (nodeTransmitSeq - 1) mod (nodeCount - 1).
-			if (nodeId == BASE_NODEID) {
-				tdm_scheduled_node = (nodeTransmitSeq == 0)
-					? (uint16_t)(nodeCount - 2)
-					: (uint16_t)((nodeTransmitSeq - 1) % (nodeCount - 1));
+		// ---- Interleaved Heartbeat TDM slot assignment ----
+		// nodeCount = 2 * NODECOUNT_param (set by tdm_set_node_count).
+		// Example for NODECOUNT=3 (base + 2 drones), nodeCount=6:
+		//   Slot 0: Base Data     (even)
+		//   Slot 1: Drone 1       (odd, drone_id = 1)
+		//   Slot 2: Base Heartbeat(even)
+		//   Slot 3: Drone 2       (odd, drone_id = 2)
+		//   Slot 4: Base Heartbeat(even)
+		//   Slot 5: Global SYNC   (nodeCount-1)
+		// No drone runs more than one slot without hearing the Base.
+		if (nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) {
+			slot = nodeTransmitSeq % nodeCount;
+			nodeTransmitSeq = (nodeTransmitSeq + 1) % nodeCount;
+
+			if (slot == nodeCount - 1) {
+				// Last slot: Global SYNC (Base transmits sync beacon)
+				tdm_state = TDM_SYNC;
+			} else if (slot % 2 == 0) {
+				// Even slots: Base transmits (data or null heartbeat)
+				if (nodeId == BASE_NODEID) {
+					tdm_state = TDM_TRANSMIT;
+					tdm_scheduled_node = BASE_NODEID;
+				} else {
+					tdm_state = TDM_RECEIVE;
+				}
+			} else {
+				// Odd slots: Drone slot. drone_id = (slot + 1) / 2
+				drone_id = (uint16_t)((slot + 1) / 2);
+				if (nodeId == drone_id) {
+					tdm_state = TDM_TRANSMIT;
+				} else {
+					tdm_state = TDM_RECEIVE;
+				}
+				if (nodeId == BASE_NODEID) {
+					tdm_scheduled_node = drone_id;
+				}
 			}
+		} else {
+			// Drone not yet synced: silently receive until SYNC packet arrives.
+			tdm_state = TDM_RECEIVE;
 		}
 #ifdef DEBUG_PINS_SYNC
 		if(tdm_state == TDM_SYNC) {
@@ -1058,7 +1081,11 @@ tdm_state_sync()
 void
 tdm_set_node_count(__pdata uint16_t count)
 {
-	nodeCount = count + 1; // add 1 for the sync channel
+	// Interleaved heartbeat TDM slot count:
+	// 1 (Base Data) + (count-1)*2 (drone + heartbeat pairs) + 1 (SYNC)
+	// = 2 * count
+	// e.g. NODECOUNT=3 (base+2 drones) → nodeCount=6
+	nodeCount = 2 * count;
 }
 
 // setup a 16 bit node destination
@@ -1228,11 +1255,10 @@ tdm_init(void)
 	}
 
 	// set the silence period to between changing channels
-	// Increased from 2x to 4x packet_latency to provide more guard time
-	// between slots, absorbing oscillator drift that causes slot collisions
-	// (observed as "N -> N -> M" in TDM drift diagnostic log).
-	// Trade-off: ~2 extra packet_latency of idle time per slot.
-	silence_period = 4*packet_latency;
+	// Reverted to 2x: the 4x guard experiment showed no improvement because
+	// drift exceeds the buffer. Drift is now addressed by the interleaved
+	// heartbeat architecture (Base transmits before every drone slot).
+	silence_period = 2*packet_latency;
 
 	// set the transmit window to allow for 2 full sized packets
 	window_width = 2*((max_data_packet_length*(uint32_t)ticks_per_byte)+packet_latency) + silence_period + packet_latency;
