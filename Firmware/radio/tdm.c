@@ -251,7 +251,9 @@ tdm_state_update(__pdata uint16_t tdelta)
 #endif // WATCH_DOG_ENABLE
 		// If we are leaving a receive slot with no packet received, log it.
 		// This surfaces completely silent slots (drone didn't transmit at all).
-		if (tdm_state == TDM_RECEIVE && nodeId == BASE_NODEID && !slot_packet_received) {
+		// Guard with !at_mode_active to avoid flooding the serial port during
+		// AT command mode (nodeId becomes BASE_NODEID immediately on ATS15=0).
+		if (tdm_state == TDM_RECEIVE && nodeId == BASE_NODEID && !slot_packet_received && !at_mode_active) {
 			printf("%u -> %u -> NONE\n",
 				(unsigned)tdm_scheduled_node,
 				(unsigned)tdm_scheduled_node);
