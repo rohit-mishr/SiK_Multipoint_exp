@@ -170,6 +170,9 @@ static __pdata char remote_at_cmd[AT_CMD_MAXLEN + 1];
 // local nodeCount
 __pdata static uint16_t nodeCount;
 
+// strict master-polling scheduled node (current slot)
+__pdata static uint16_t tdm_scheduled_node;
+
 /// display RSSI output
 void
 tdm_show_rssi(void)
@@ -241,18 +244,20 @@ tdm_state_update(__pdata uint16_t tdelta)
 		// Tickle Watchdog
 		PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
-		if ((nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) && (nodeTransmitSeq++ % nodeCount) == nodeId) {
-			tdm_state = TDM_TRANSMIT;
-			nodeTransmitSeq %= nodeCount;
-		}
-		// We need to -1 from nodeTransmitSeq as it was incremented above
-		// Remember we have incremented nodeCount to allow for the sync period
-		else if (nodeTransmitSeq < 0x8000 && (nodeTransmitSeq-1 % nodeCount) == nodeCount-1) {
-			tdm_state = TDM_SYNC;
-		}
-		else {
-			// Check for Bonus?
-			tdm_state = TDM_RECEIVE; // If there are other nodes yet to transmit lets hear them first
+		// ---- Strict Master Polling TDM ----
+		// The Master cycles tdm_scheduled_node 0..nodeCount-1.
+		// slot nodeCount-1 is the SYNC slot.
+		// DRONES: NEVER set TDM_TRANSMIT here. Their transmit permission
+		// comes ONLY from the poll token in the received packet.
+		if (nodeId == BASE_NODEID) {
+			tdm_scheduled_node = (uint16_t)((tdm_scheduled_node + 1) % nodeCount);
+			if (tdm_scheduled_node == nodeCount - 1) {
+				tdm_state = TDM_SYNC;
+			} else {
+				tdm_state = TDM_TRANSMIT;
+			}
+		} else {
+			tdm_state = TDM_RECEIVE;
 		}
 #ifdef DEBUG_PINS_SYNC
 		if(tdm_state == TDM_SYNC) {
@@ -625,24 +630,43 @@ tdm_serial_loop(void)
 			memcpy(&trailer, pbuf +len-sizeof(trailer), sizeof(trailer));
 			len -= sizeof(trailer);
 
-			// Sync the timing sequence with the incoming packet
-			// trailer.nodeid in a sync byte is the next channel to receive/transmit on
-			if(trailer.nodeid & 0x8000){
-				if(sync_count < 0xFF && nodeTransmitSeq == 0){
-					sync_count += 1;
+			// ---- Strict Master Polling: Beacon Decode ----
+			// The Base always sets bit 15.
+			// Bits 0-7: the polled node ID (tdm_scheduled_node)
+			// Bits 8-14 (during SYNC): the master's frequency hopping channel
+			if (trailer.nodeid & 0x8000) {
+				uint16_t polled = trailer.nodeid & 0x00FF;
+
+				if (polled == (uint16_t)(nodeCount - 1)) {
+					uint8_t channel = (trailer.nodeid >> 8) & 0x7F;
+					set_transmit_channel(channel);
+					if (sync_count < 0xFF) {
+						sync_count += 1;
+					}
 				}
-				nodeTransmitSeq = 0;
-				set_transmit_channel(trailer.nodeid & 0x7FFF);
+
+				nodeTransmitSeq = polled;
 				received_sync = true;
-				continue;
-			}
-			// We dont want to sync off nodes sending bonus data
-			else if (sync_any && !trailer.bonus) {
+
+				if (nodeId != BASE_NODEID) {
+					if (polled == nodeId) {
+						tdm_state = TDM_TRANSMIT;
+						tdm_state_remaining = tx_window_width;
+						transmit_wait = packet_latency;
+					} else {
+						tdm_state = TDM_RECEIVE;
+						tdm_state_remaining = tx_window_width;
+					}
+				}
+			} else if (sync_any && !trailer.bonus) {
 				if(sync_count < 0xFF && nodeTransmitSeq == trailer.nodeid + 1){
 					sync_count += 1;
 				}
 				nodeTransmitSeq = trailer.nodeid + 1;
 				received_sync = true;
+				if (nodeId == BASE_NODEID && trailer.nodeid == tdm_scheduled_node) {
+					tdm_state_remaining = 0;
+				}
 			}
 			
 			// update filtered RSSI value and packet stats
@@ -733,30 +757,14 @@ tdm_serial_loop(void)
 			}
 		}
 
-		// we are allowed to transmit in our transmit window
-		// or in the other radios transmit window if we have
-		// bonus ticks
-#if USE_TICK_YIELD
-		if (tdm_yield_update(YIELD_GET, YIELD_NO_DATA) == YIELD_RECEIVE) {
-#ifdef DEBUG_PINS_TRANSMIT_RECEIVE
-			P2 &= ~0x04;
-#endif // DEBUG_PINS_TRANSMIT_RECEIVE
-			continue;
-		}
-#ifdef DEBUG_PINS_TRANSMIT_RECEIVE
-		P2 |= 0x04;
-#endif // DEBUG_PINS_TRANSMIT_RECEIVE
-#ifdef DEBUG_PINS_TX_RX_STATE
-		P2 &= ~0x08;
-#endif // DEBUG_PINS_TX_RX_STATE
-#else // USE_TICK_YIELD
-		// If we arn't in transmit or our node id isn't BASE_NODEID and in tdm_sync
+		// Strict Master Polling guard:
+		// If we aren't in TDM_TRANSMIT, and it's not the Base sending the
+		// SYNC beacon, we MUST NOT transmit.
 		if (tdm_state != TDM_TRANSMIT) {
 			if(tdm_state != TDM_SYNC || nodeId != BASE_NODEID) {
 				continue;
 			}
-		}		
-#endif // USE_TICK_YIELD
+		}
 
 		if (transmit_wait != 0) {
 			// we're waiting for a preamble to turn into a packet
@@ -916,20 +924,26 @@ tdm_serial_loop(void)
 			trailer.window = 0;
 			trailer.resend = 0;
 			trailer.command = 0;
-		} 
-		else if (tdm_state != TDM_TRANSMIT && len == 0 && !(tdm_state == TDM_SYNC && nodeId == BASE_NODEID)) {
-			continue; // If we have nothing contructive to send be quiet..
 		}
-		else {
+		else if (tdm_state == TDM_TRANSMIT || (tdm_state == TDM_SYNC && nodeId == BASE_NODEID)) {
 			// calculate the control word as the number of
 			// 16usec ticks that will be left in this
 			// tdm state after this packet is transmitted
 			trailer.window = (uint16_t)(tdm_state_remaining - flight_time_estimate(len+sizeof(trailer)));
+		} else {
+			continue;
 		}
 
-		// if in sync mode and we are the base, add the channel and sync bit
-		if (tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
-			trailer.nodeid = get_transmit_channel() | 0x8000;
+		// Base always encodes the poll token.
+		// Bit 15 = 1 (Master flag).
+		// Bits 0-7 = tdm_scheduled_node.
+		// Bits 8-14 (during SYNC) = get_transmit_channel().
+		if (nodeId == BASE_NODEID) {
+			if (tdm_state == TDM_SYNC) {
+				trailer.nodeid = (uint16_t)(0x8000 | (get_transmit_channel() << 8) | tdm_scheduled_node);
+			} else {
+				trailer.nodeid = (uint16_t)(0x8000 | tdm_scheduled_node);
+			}
 		} else {
 			trailer.nodeid = nodeId;
 		}
@@ -1005,6 +1019,17 @@ tdm_serial_loop(void)
 		// start transmitting the packet
 		if (!radio_transmit(len + sizeof(trailer), pbuf, nodeDestination, tdm_state_remaining) && len != 0) {
 			packet_force_resend();
+		}
+
+		// Post-transmit state switch:
+		// - Drones: one-shot handback, go to TDM_RECEIVE immediately.
+		// - Base in drone poll slot: switch to TDM_RECEIVE to listen for reply.
+		// - Base in its own slot (tdm_scheduled_node == BASE_NODEID): stay transmit.
+		if (nodeId != BASE_NODEID) {
+			tdm_state = TDM_RECEIVE;
+			tdm_state_remaining = 0;
+		} else if (tdm_scheduled_node != BASE_NODEID) {
+			tdm_state = TDM_RECEIVE;
 		}
 		
 		if (lbt_rssi != 0) {
@@ -1251,6 +1276,7 @@ tdm_init(void)
 	// Clear Values..
 	trailer.nodeid  = 0xFFFF;
 	nodeTransmitSeq = 0xFFFF;
+	tdm_scheduled_node = nodeCount - 1;
 	memset(remote_statistics, 0, sizeof(remote_statistics));
 	memset(statistics, 0, sizeof(statistics));
 	
