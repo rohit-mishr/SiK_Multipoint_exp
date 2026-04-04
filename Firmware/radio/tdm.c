@@ -263,25 +263,26 @@ tdm_state_update(__pdata uint16_t tdelta)
 		}
 		// Reset the per-slot received flag for the incoming slot.
 		slot_packet_received = false;
-		// ---- Interleaved Heartbeat TDM slot assignment ----
-		// nodeCount = 2 * NODECOUNT_param (set by tdm_set_node_count).
-		// Example for NODECOUNT=3 (base + 2 drones), nodeCount=6:
-		//   Slot 0: Base Data     (even)
-		//   Slot 1: Drone 1       (odd, drone_id = 1)
-		//   Slot 2: Base Heartbeat(even)
-		//   Slot 3: Drone 2       (odd, drone_id = 2)
-		//   Slot 4: Base Heartbeat(even)
-		//   Slot 5: Global SYNC   (nodeCount-1)
-		// No drone runs more than one slot without hearing the Base.
+		// ---- Symmetric Interleaved Heartbeat TDM slot assignment ----
+		// nodeCount = 2 * NODECOUNT_param + 1  (set by tdm_set_node_count).
+		// Example for NODECOUNT=3 (base + 2 drones), nodeCount=7:
+		//   Slot 0: Base Data       (even, slot==0)
+		//   Slot 1: Base Heartbeat  (odd)
+		//   Slot 2: Drone 1         (even, drone_id = slot/2 = 1)
+		//   Slot 3: Base Heartbeat  (odd)
+		//   Slot 4: Drone 2         (even, drone_id = slot/2 = 2)
+		//   Slot 5: Base Heartbeat  (odd)
+		//   Slot 6: Global SYNC     (nodeCount-1)
+		// Every talk slot is sandwiched between Base beacons.
 		if (nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) {
 			slot = nodeTransmitSeq % nodeCount;
 			nodeTransmitSeq = (nodeTransmitSeq + 1) % nodeCount;
 
 			if (slot == nodeCount - 1) {
-				// Last slot: Global SYNC (Base transmits sync beacon)
+				// Last slot: Global SYNC
 				tdm_state = TDM_SYNC;
-			} else if (slot % 2 == 0) {
-				// Even slots: Base transmits (data or null heartbeat)
+			} else if (slot == 0 || slot % 2 == 1) {
+				// Base slots: Slot 0 (Data) + all Odd slots (Heartbeats)
 				if (nodeId == BASE_NODEID) {
 					tdm_state = TDM_TRANSMIT;
 					tdm_scheduled_node = BASE_NODEID;
@@ -289,8 +290,8 @@ tdm_state_update(__pdata uint16_t tdelta)
 					tdm_state = TDM_RECEIVE;
 				}
 			} else {
-				// Odd slots: Drone slot. drone_id = (slot + 1) / 2
-				drone_id = (uint16_t)((slot + 1) / 2);
+				// Even slots >= 2: Drone Talk. drone_id = slot/2
+				drone_id = (uint16_t)(slot / 2);
 				if (nodeId == drone_id) {
 					tdm_state = TDM_TRANSMIT;
 				} else {
@@ -672,16 +673,20 @@ tdm_serial_loop(void)
 			memcpy(&trailer, pbuf +len-sizeof(trailer), sizeof(trailer));
 			len -= sizeof(trailer);
 
-			// Sync the timing sequence with the incoming packet
-			// trailer.nodeid in a sync byte is the next channel to receive/transmit on
+			// Phase-Lock Sync: every Base transmission carries slot index.
+			// Bit 15 = sync flag, Bits 8-14 = current slot, Bits 0-7 = channel.
 			if(trailer.nodeid & 0x8000){
-				if(sync_count < 0xFF && nodeTransmitSeq == 0){
+				uint16_t base_slot = (trailer.nodeid >> 8) & 0x7F;
+				set_transmit_channel(trailer.nodeid & 0xFF);
+				// Snap local sequence: next slot = base_slot + 1
+				nodeTransmitSeq = (uint16_t)((base_slot + 1) % nodeCount);
+				if (sync_count < 0xFF && base_slot == (nodeCount - 1)) {
 					sync_count += 1;
 				}
-				nodeTransmitSeq = 0;
-				set_transmit_channel(trailer.nodeid & 0x7FFF);
 				received_sync = true;
-				continue;
+				// Do NOT continue here: fall through so trailer.window syncs
+				// tdm_state_remaining (micro-timer) and empty heartbeats are
+				// discarded naturally by the len==0 check below.
 			}
 			// We dont want to sync off nodes sending bonus data
 			else if (sync_any && !trailer.bonus) {
@@ -976,9 +981,14 @@ tdm_serial_loop(void)
 			trailer.window = (uint16_t)(tdm_state_remaining - flight_time_estimate(len+sizeof(trailer)));
 		}
 
-		// if in sync mode and we are the base, add the channel and sync bit
-		if (tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
-			trailer.nodeid = get_transmit_channel() | 0x8000;
+		// Base always broadcasts slot index + sync bit in every transmission.
+		// Bit 15 = sync flag (0x8000), Bits 8-14 = current slot, Bits 0-7 = channel.
+		// This lets drones phase-lock on every heartbeat, not just the SYNC slot.
+		if (nodeId == BASE_NODEID) {
+			uint16_t cur_slot = (nodeTransmitSeq == 0)
+				? (nodeCount - 1)
+				: (nodeTransmitSeq - 1);
+			trailer.nodeid = 0x8000 | (cur_slot << 8) | get_transmit_channel();
 		} else {
 			trailer.nodeid = nodeId;
 		}
@@ -1081,11 +1091,11 @@ tdm_state_sync()
 void
 tdm_set_node_count(__pdata uint16_t count)
 {
-	// Interleaved heartbeat TDM slot count:
-	// 1 (Base Data) + (count-1)*2 (drone + heartbeat pairs) + 1 (SYNC)
-	// = 2 * count
-	// e.g. NODECOUNT=3 (base+2 drones) → nodeCount=6
-	nodeCount = 2 * count;
+	// Symmetric Interleaved TDM:
+	// Pattern: [Base Data][HB][Drone1][HB][Drone2][HB]...[SYNC]
+	// Slots:     0        1   2       3   4       5       2*count
+	// Total = 2 * NODECOUNT_param + 1
+	nodeCount = 2 * count + 1;
 }
 
 // setup a 16 bit node destination
