@@ -106,9 +106,6 @@ static __bit blink_state;
 static __bit received_sync;
 __pdata static uint8_t sync_count; // the amount of successfull times synced
 static __bit sync_any;
-// Per-slot flag: set true when a data packet is received in the current slot.
-// Reset at every slot transition. Used to detect silent (missed) slots.
-static __bit slot_packet_received;
 
 /// the latency in 16usec timer2 ticks for sending a zero length packet
 __pdata static uint16_t packet_latency;
@@ -182,10 +179,7 @@ static __pdata char remote_at_cmd[AT_CMD_MAXLEN + 1];
 // local nodeCount
 __pdata static uint16_t nodeCount;
 
-// TDM drift diagnostic: the node scheduled for the current receive slot.
-// Updated in tdm_state_update() on every slot transition to TDM_RECEIVE.
-// nodeCount is (user_nodes + 1) to include the sync slot, so data slots
-// are 0 .. nodeCount-2.  nodeTransmitSeq is already post-increment here.
+// strict master-polling scheduled node (current slot)
 __pdata static uint16_t tdm_scheduled_node;
 
 /// display RSSI output
@@ -245,20 +239,6 @@ static void tdm_state_update(__pdata uint16_t tdelta) {
     // Tickle Watchdog
     PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
-       // If we are leaving a receive slot with no packet received, log it.
-       // This surfaces completely silent slots (drone didn't transmit at all).
-       // Guard with !at_mode_active to avoid flooding the serial port during
-       // AT command mode (nodeId becomes BASE_NODEID immediately on ATS15=0).
-    // Log NONE when the Master's poll window expires without a drone reply.
-    // Master is always in TDM_TRANSMIT (not TDM_RECEIVE), so check node 0
-    // and look at a real drone slot (not Base slot=0, not SYNC slot=nodeCount-1).
-    if (nodeId == BASE_NODEID && !slot_packet_received && !at_mode_active &&
-        tdm_scheduled_node != 0 && tdm_scheduled_node != (nodeCount - 1)) {
-      printf("%u -> %u -> NONE\n", (unsigned)tdm_scheduled_node,
-             (unsigned)tdm_scheduled_node);
-    }
-    // Reset the per-slot received flag for the incoming slot.
-    slot_packet_received = false;
     // ---- Strict Master Polling TDM ----
     // The Master cycles tdm_scheduled_node 0..nodeCount-1.
     // slot nodeCount-1 is the SYNC slot.
@@ -727,21 +707,12 @@ void tdm_serial_loop(void) {
           if (len > 1) {
             handle_at_command(len);
           }
-        } else if (!at_mode_active) {
-          // Diagnostic: log every packet received by Base (even empty ones).
-          // len==0 means the drone had nothing to send but acknowledged the poll.
-          if (nodeId == BASE_NODEID && !(trailer.nodeid & 0x8000)) {
-            slot_packet_received = true;
-            printf("%u -> %u -> %u\n", (unsigned)tdm_scheduled_node,
-                   (unsigned)tdm_scheduled_node,
-                   (unsigned)(trailer.nodeid & 0x7FFF));
-          } else if (nodeId != BASE_NODEID && len != 0 &&
-                     !packet_is_duplicate(len, pbuf, trailer.resend)) {
-            // Non-base nodes: forward non-empty data to serial
-            LED_ACTIVITY = LED_ON;
-            serial_write_buf(pbuf, len);
-            LED_ACTIVITY = LED_OFF;
-          }
+        } else if (len != 0 && !packet_is_duplicate(len, pbuf, trailer.resend) &&
+                   !at_mode_active) {
+          // its user data - send it out the serial port
+          LED_ACTIVITY = LED_ON;
+          serial_write_buf(pbuf, len);
+          LED_ACTIVITY = LED_OFF;
         }
       }
       continue;
