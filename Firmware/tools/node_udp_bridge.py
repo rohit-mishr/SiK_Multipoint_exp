@@ -23,6 +23,8 @@ import asyncio
 import logging
 import time
 
+from pymavlink import mavutil
+
 logger = logging.getLogger("node_bridge")
 logging.basicConfig(
     level=logging.INFO,
@@ -31,77 +33,6 @@ logging.basicConfig(
 )
 
 DEFAULT_NODES = [1, 2, 3, 4]
-
-
-class _MAVLinkStreamParser:
-    """Incremental MAVLink v1/v2 framing parser (length-based)."""
-
-    def __init__(self):
-        self._buf = bytearray()
-
-    def feed(self, data: bytes) -> list[tuple[int, bytes]]:
-        self._buf.extend(data)
-        packets: list[tuple[int, bytes]] = []
-
-        while True:
-            if not self._buf:
-                return packets
-
-            # Re-sync to next MAVLink start byte.
-            i_fe = self._buf.find(0xFE)
-            i_fd = self._buf.find(0xFD)
-            starts = [i for i in (i_fe, i_fd) if i != -1]
-            if not starts:
-                self._buf.clear()
-                return packets
-
-            start = min(starts)
-            if start > 0:
-                del self._buf[:start]
-
-            stx = self._buf[0]
-
-            if stx == 0xFE:  # MAVLink v1
-                if len(self._buf) < 2:
-                    return packets
-
-                payload_len = self._buf[1]
-                total_len = 8 + payload_len  # 6 hdr + payload + 2 crc
-                if total_len > 263:
-                    del self._buf[0]
-                    continue
-                if len(self._buf) < total_len:
-                    return packets
-
-                pkt = bytes(self._buf[:total_len])
-                del self._buf[:total_len]
-
-                sysid = pkt[3]
-                packets.append((sysid, pkt))
-                continue
-
-            if stx == 0xFD:  # MAVLink v2
-                if len(self._buf) < 3:
-                    return packets
-
-                payload_len = self._buf[1]
-                incompat_flags = self._buf[2]
-                signature_len = 13 if (incompat_flags & 0x01) else 0
-                total_len = 12 + payload_len + signature_len
-                if total_len > 280:
-                    del self._buf[0]
-                    continue
-                if len(self._buf) < total_len:
-                    return packets
-
-                pkt = bytes(self._buf[:total_len])
-                del self._buf[:total_len]
-
-                sysid = pkt[5]
-                packets.append((sysid, pkt))
-                continue
-
-            del self._buf[0]
 
 
 class _NodeUDP(asyncio.DatagramProtocol):
@@ -127,15 +58,17 @@ class _NodeUDP(asyncio.DatagramProtocol):
         if self.transport:
             self.transport.sendto(packet, self._gcs_addr)
 
-
 class _SerialReader:
-    """Non-blocking serial reader via executor thread."""
+    """Non-blocking serial reader via executor thread using pymavlink."""
 
     def __init__(self, ser, loop: asyncio.AbstractEventLoop, nodes: dict[int, _NodeUDP]):
         self._ser = ser
         self._loop = loop
         self._nodes = nodes
-        self._parser = _MAVLinkStreamParser()
+        # Initialize robust pymavlink parser (dialect agnostic headers)
+        self._mav = mavutil.mavlink.MAVLink(None)
+        self._mav.robust_parsing = True
+        
         self._running = True
         self._task = loop.create_task(self._run())
 
@@ -153,12 +86,18 @@ class _SerialReader:
             if not chunk:
                 continue
 
-            for sysid, packet in self._parser.feed(chunk):
-                proto = self._nodes.get(sysid)
-                if proto:
-                    proto.forward(packet)
-                else:
-                    logger.debug(f"[Serial] Unmapped sysid {sysid}; packet dropped")
+            messages = self._mav.parse_buffer(chunk)
+            if messages:
+                for msg in messages:
+                    if msg.get_type() == 'BAD_DATA':
+                        continue
+
+                    sysid = msg.get_srcSystem()
+                    proto = self._nodes.get(sysid)
+                    if proto:
+                        proto.forward(msg.get_msgbuf())
+                    else:
+                        logger.debug(f"[Serial] Unmapped sysid {sysid}; packet dropped")
 
     def _read(self) -> bytes:
         try:
