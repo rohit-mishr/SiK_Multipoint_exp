@@ -64,6 +64,10 @@ typedef struct pins_user_info {
 
 #define PINS_USER_INFO_DEFAULT {PIN_NODE_NULL, PIN_OUTPUT, PIN_LOW, PIN_NULL}
 
+#if PIN_MAX > 0
+extern pins_user_info_t pin_values[];
+#endif
+
 extern void pins_user_init(void);
 extern void pin_user_change_check();
 //extern bool pins_user_set_interrupt(__pdata uint8_t pin, __pdata uint32_t node);
