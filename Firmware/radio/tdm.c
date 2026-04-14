@@ -49,6 +49,7 @@ __pdata static enum tdm_state tdm_state;
 __pdata static uint16_t nodeTransmitSeq; // sequence the nodes can transmit in.
 __pdata static uint16_t paramNodeDestination; // User defined Packet destination
 __pdata static uint16_t nodeDestination; // Real Packet Destination (as some messages should be broadcasted)
+static uint8_t tdm_round_counter = 0;
 
 /// a packet buffer for the TDM code
 __xdata uint8_t	pbuf[MAX_PACKET_LENGTH];
@@ -240,13 +241,27 @@ tdm_state_update(__pdata uint16_t tdelta)
 		// Tickle Watchdog
 		PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
-		if ((nodeTransmitSeq < 0x8000 || nodeId == BASE_NODEID) && (nodeTransmitSeq++ % nodeCount) == nodeId) {
-			tdm_state = TDM_TRANSMIT;
-			nodeTransmitSeq %= nodeCount;
+		
+		uint16_t current_slot_owner = nodeTransmitSeq;
+		if (current_slot_owner >= 0x8000) current_slot_owner = 0;
+
+		bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+		if (current_slot_owner == nodeCount - 1) {
+			tdm_round_counter++;
 		}
-		// We need to -1 from nodeTransmitSeq as it was incremented above
-		// Remember we have incremented nodeCount to allow for the sync period
-		else if (nodeTransmitSeq < 0x8000 && (nodeTransmitSeq-1 % nodeCount) == nodeCount-1) {
+		
+		if (is_focused && (tdm_round_counter % 10) != 0) {
+			if (current_slot_owner == 0) nodeTransmitSeq = mission_focused_node;
+			else if (current_slot_owner == mission_focused_node) nodeTransmitSeq = nodeCount - 1;
+			else nodeTransmitSeq = 0;
+		} else {
+			nodeTransmitSeq = (current_slot_owner + 1) % nodeCount;
+		}
+
+		if ((current_slot_owner < 0x8000 || nodeId == BASE_NODEID) && current_slot_owner == nodeId) {
+			tdm_state = TDM_TRANSMIT;
+		}
+		else if (current_slot_owner < 0x8000 && current_slot_owner == nodeCount - 1) {
 			tdm_state = TDM_SYNC;
 		}
 		else {
@@ -620,24 +635,42 @@ tdm_serial_loop(void)
 			// extract control bytes from end of packet
 			memcpy(&trailer, pbuf +len-sizeof(trailer), sizeof(trailer));
 			len -= sizeof(trailer);
+			
+			if (len > 0 && trailer.window != 0) {
+				packet_process_incoming(pbuf, len, trailer.nodeid & 0x7FFF);
+			}
 
 			// Sync the timing sequence with the incoming packet
 			// trailer.nodeid in a sync byte is the next channel to receive/transmit on
 			if(trailer.nodeid & 0x8000){
-				if(sync_count < 0xFF && nodeTransmitSeq == 0){
+				uint16_t fn = (trailer.nodeid >> 8) & 0x7F;
+				if (fn != 0x7F) {
+					mission_focused_node = fn;
+					mission_focused_expiry = timer2_tick();
+				} else {
+					mission_focused_node = 0xFFFF;
+				}
+				if(sync_count < 0xFF && (nodeTransmitSeq == 0 || nodeTransmitSeq >= 0x8000)){
 					sync_count += 1;
 				}
 				nodeTransmitSeq = 0;
-				set_transmit_channel(trailer.nodeid & 0x7FFF);
+				set_transmit_channel(trailer.nodeid & 0x00FF);
 				received_sync = true;
 				continue;
 			}
 			// We dont want to sync off nodes sending bonus data
 			else if (sync_any && !trailer.bonus) {
-				if(sync_count < 0xFF && nodeTransmitSeq == trailer.nodeid + 1){
+				bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+				if (is_focused && (tdm_round_counter % 10) != 0) {
+					if (trailer.nodeid == 0) nodeTransmitSeq = mission_focused_node;
+					else if (trailer.nodeid == mission_focused_node) nodeTransmitSeq = nodeCount - 1;
+					else nodeTransmitSeq = trailer.nodeid + 1;
+				} else {
+					nodeTransmitSeq = trailer.nodeid + 1;
+				}
+				if(sync_count < 0xFF && (nodeTransmitSeq == (trailer.nodeid + 1) || nodeTransmitSeq == mission_focused_node)){
 					sync_count += 1;
 				}
-				nodeTransmitSeq = trailer.nodeid + 1;
 				received_sync = true;
 			}
 			
@@ -914,7 +947,14 @@ tdm_serial_loop(void)
 
 		// if in sync mode and we are the base, add the channel and sync bit
 		if (tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
-			trailer.nodeid = get_transmit_channel() | 0x8000;
+			uint16_t sync_channel = get_transmit_channel() & 0x00FF;
+			trailer.nodeid = sync_channel | 0x8000;
+			bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+			if (is_focused) {
+				trailer.nodeid |= ((mission_focused_node & 0x7F) << 8);
+			} else {
+				trailer.nodeid |= (0x7F << 8);
+			}
 		} else {
 			trailer.nodeid = nodeId;
 		}
