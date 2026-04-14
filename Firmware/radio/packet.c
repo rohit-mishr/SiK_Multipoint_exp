@@ -36,6 +36,7 @@
 #include "radio.h"
 #include "packet.h"
 #include "timer.h"
+#include "tdm.h"
 
 static __bit last_sent_is_resend;
 static __bit last_sent_is_injected;
@@ -79,6 +80,11 @@ __xdata uint8_t sysid_to_nodeid[256];
 uint16_t mission_focused_node = 0xFFFF;
 uint16_t mission_focused_expiry = 0;
 
+__pdata uint8_t mav_payload_offset_cache = 0;
+__pdata uint8_t mav_msgid_cache;
+__pdata uint8_t mav_target_sysid_cache;
+__pdata uint8_t mav_mapped_node_cache;
+
 void packet_process_incoming(__xdata uint8_t * __pdata buf, __pdata uint8_t len, __pdata uint16_t nodeid)
 {
 	if (len < 6) return;
@@ -87,44 +93,71 @@ void packet_process_incoming(__xdata uint8_t * __pdata buf, __pdata uint8_t len,
 	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
 		sysid_to_nodeid[buf[5]] = nodeid;
 	}
+
+	if (nodeId != BASE_NODEID || mission_focused_node == 0xFFFF || nodeid != mission_focused_node) {
+		return;
+	}
+
+	if (len < 6) return;
+	if (buf[0] == MAVLINK09_STX || buf[0] == MAVLINK10_STX) {
+		mav_payload_offset_cache = 6;
+		mav_msgid_cache = buf[5];
+	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
+		mav_payload_offset_cache = 10;
+		mav_msgid_cache = buf[7];
+	} else {
+		return;
+	}
+
+	// Keep the focused session alive from focused-node mission traffic.
+	// End the session when focused node sends MISSION_ACK.
+	if (mav_msgid_cache == 47) {
+		mission_focused_node = 0xFFFF;
+	} else if (mav_msgid_cache == 39 || mav_msgid_cache == 73 || mav_msgid_cache == 40 || mav_msgid_cache == 51 ||
+		   mav_msgid_cache == 44 || mav_msgid_cache == 45 || mav_msgid_cache == 43 || mav_msgid_cache == 37 || mav_msgid_cache == 46) {
+		mission_focused_expiry = timer2_tick();
+	}
 }
 
 static void sniff_mission_upload(__xdata uint8_t * __pdata buf, __pdata uint8_t len)
 {
-	uint8_t msgid;
-	uint8_t target_sysid = 0;
-	uint8_t payload_offset;
+	mav_target_sysid_cache = 0;
 
 	if (len < 6) return;
 	if (buf[0] == MAVLINK09_STX || buf[0] == MAVLINK10_STX) {
-		msgid = buf[5];
-		payload_offset = 6;
+		mav_payload_offset_cache = 6;
+		mav_msgid_cache = buf[5];
 	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
-		msgid = buf[7]; // MAVLink 2 short MSGIDs
-		payload_offset = 10;
+		mav_payload_offset_cache = 10;
+		mav_msgid_cache = buf[7];
 	} else {
 		return;
 	}
 
 	// MAVLink sorts payload fields strictly by data type size (uint64 -> float -> uint16 -> uint8).
 	// Because of this, target_sysid is at DIFFERENT byte offsets depending on the message!
-	if (msgid == 43 || msgid == 47) { // 43:MISSION_REQUEST_LIST, 47:MISSION_ACK
-		if (len <= payload_offset) return;
-		target_sysid = buf[payload_offset];
-	} else if (msgid == 40 || msgid == 44 || msgid == 51) { // 40:MISSION_REQUEST, 44:MISSION_COUNT, 51:MISSION_REQUEST_INT
-		if (len <= payload_offset + 2) return;
-		target_sysid = buf[payload_offset + 2]; // Follows a 2-byte uint16_t field
-	} else if (msgid == 39 || msgid == 73) { // 39:MISSION_ITEM, 73:MISSION_ITEM_INT
-		if (len <= payload_offset + 32) return;
-		target_sysid = buf[payload_offset + 32]; // Follows 28 bytes of floats/ints and 4 bytes of uint16_t
+	if (mav_msgid_cache == 43 || mav_msgid_cache == 47 || mav_msgid_cache == 45) { // REQUEST_LIST, ACK, CLEAR_ALL
+		if (len <= mav_payload_offset_cache) return;
+		mav_target_sysid_cache = buf[mav_payload_offset_cache];
+	} else if (mav_msgid_cache == 40 || mav_msgid_cache == 44 || mav_msgid_cache == 51 || mav_msgid_cache == 41) { // REQUEST, COUNT, REQUEST_INT, SET_CURRENT
+		if (len <= mav_payload_offset_cache + 2) return;
+		mav_target_sysid_cache = buf[mav_payload_offset_cache + 2];
+	} else if (mav_msgid_cache == 37) { // MISSION_REQUEST_PARTIAL_LIST
+		if (len <= mav_payload_offset_cache + 4) return;
+		mav_target_sysid_cache = buf[mav_payload_offset_cache + 4];
+	} else if (mav_msgid_cache == 39 || mav_msgid_cache == 73) { // MISSION_ITEM, MISSION_ITEM_INT
+		if (len <= mav_payload_offset_cache + 32) return;
+		mav_target_sysid_cache = buf[mav_payload_offset_cache + 32];
 	} else {
 		return; // Not a relevant mission message
 	}
 
-	if (msgid == 47) { // MISSION_ACK
+	mav_mapped_node_cache = sysid_to_nodeid[mav_target_sysid_cache];
+
+	if (mav_msgid_cache == 47) { // MISSION_ACK
 		mission_focused_node = 0xFFFF; // Clear 2-Node strict prioritization gracefully
-	} else if (target_sysid != 0 && sysid_to_nodeid[target_sysid] != 0 && sysid_to_nodeid[target_sysid] != 0xFF) {
-		mission_focused_node = sysid_to_nodeid[target_sysid];
+	} else if (mav_target_sysid_cache != 0 && mav_mapped_node_cache != 0 && mav_mapped_node_cache != 0xFF) {
+		mission_focused_node = mav_mapped_node_cache;
 		mission_focused_expiry = timer2_tick();
 	}
 }

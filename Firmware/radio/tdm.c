@@ -49,7 +49,7 @@ __pdata static enum tdm_state tdm_state;
 __pdata static uint16_t nodeTransmitSeq; // sequence the nodes can transmit in.
 __pdata static uint16_t paramNodeDestination; // User defined Packet destination
 __pdata static uint16_t nodeDestination; // Real Packet Destination (as some messages should be broadcasted)
-static uint8_t tdm_round_counter = 0;
+__pdata static uint8_t tdm_session_phase = 0;
 
 /// a packet buffer for the TDM code
 __xdata uint8_t	pbuf[MAX_PACKET_LENGTH];
@@ -242,23 +242,50 @@ tdm_state_update(__pdata uint16_t tdelta)
 		PCA0CPH5 = 0;
 #endif // WATCH_DOG_ENABLE
 		
-		uint16_t current_slot_owner = nodeTransmitSeq;
-		if (current_slot_owner >= 0x8000) current_slot_owner = 0;
+		__pdata uint16_t current_slot_owner = nodeTransmitSeq;
+		if (current_slot_owner >= 0x8000) current_slot_owner = BASE_NODEID;
 
-		bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
-		if (current_slot_owner == nodeCount - 1) {
-			tdm_round_counter++;
-		}
-		
-		if (is_focused && (tdm_round_counter % 10) != 0) {
-			if (current_slot_owner == 0) nodeTransmitSeq = mission_focused_node;
-			else if (current_slot_owner == mission_focused_node) nodeTransmitSeq = nodeCount - 1;
-			else nodeTransmitSeq = 0;
+		__pdata bool focused_session_active = (mission_focused_node > BASE_NODEID &&
+				 mission_focused_node < (nodeCount - 1) &&
+				 (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
+		if (focused_session_active) {
+			if (current_slot_owner == BASE_NODEID) {
+				if (tdm_session_phase >= 3) {
+					nodeTransmitSeq = nodeCount - 1; // periodic sync maintenance
+					tdm_session_phase = 0;
+				} else {
+					nodeTransmitSeq = mission_focused_node;
+				}
+			} else if (current_slot_owner == mission_focused_node) {
+				nodeTransmitSeq = BASE_NODEID;
+				tdm_session_phase++;
+			} else if (current_slot_owner == nodeCount - 1) {
+				nodeTransmitSeq = BASE_NODEID;
+			} else {
+				nodeTransmitSeq = BASE_NODEID;
+			}
 		} else {
+			tdm_session_phase = 0;
 			nodeTransmitSeq = (current_slot_owner + 1) % nodeCount;
 		}
 
-		if ((current_slot_owner < 0x8000 || nodeId == BASE_NODEID) && current_slot_owner == nodeId) {
+		if (focused_session_active) {
+			if (nodeId == BASE_NODEID) {
+				if (current_slot_owner == BASE_NODEID) {
+					tdm_state = TDM_TRANSMIT;
+				} else if (current_slot_owner == nodeCount - 1) {
+					tdm_state = TDM_SYNC;
+				} else {
+					tdm_state = TDM_RECEIVE;
+				}
+			} else {
+				if (nodeId == mission_focused_node && current_slot_owner == mission_focused_node) {
+					tdm_state = TDM_TRANSMIT;
+				} else {
+					tdm_state = TDM_RECEIVE;
+				}
+			}
+		} else if ((current_slot_owner < 0x8000 || nodeId == BASE_NODEID) && current_slot_owner == nodeId) {
 			tdm_state = TDM_TRANSMIT;
 		}
 		else if (current_slot_owner < 0x8000 && current_slot_owner == nodeCount - 1) {
@@ -643,32 +670,26 @@ tdm_serial_loop(void)
 			// Sync the timing sequence with the incoming packet
 			// trailer.nodeid in a sync byte is the next channel to receive/transmit on
 			if(trailer.nodeid & 0x8000){
-				uint16_t fn = (trailer.nodeid >> 8) & 0x7F;
-				if (fn != 0x7F) {
+				__pdata uint16_t fn = (trailer.nodeid >> 8) & 0x7F;
+				if (fn != 0x7F && fn < (nodeCount - 1) && fn != BASE_NODEID) {
 					mission_focused_node = fn;
 					mission_focused_expiry = timer2_tick();
 				} else {
 					mission_focused_node = 0xFFFF;
+					tdm_session_phase = 0;
 				}
-				if(sync_count < 0xFF && (nodeTransmitSeq == 0 || nodeTransmitSeq >= 0x8000)){
+				if(sync_count < 0xFF && (nodeTransmitSeq == BASE_NODEID || nodeTransmitSeq >= 0x8000)){
 					sync_count += 1;
 				}
-				nodeTransmitSeq = 0;
+				nodeTransmitSeq = BASE_NODEID;
 				set_transmit_channel(trailer.nodeid & 0x00FF);
 				received_sync = true;
 				continue;
 			}
 			// We dont want to sync off nodes sending bonus data
 			else if (sync_any && !trailer.bonus) {
-				bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
-				if (is_focused && (tdm_round_counter % 10) != 0) {
-					if (trailer.nodeid == 0) nodeTransmitSeq = mission_focused_node;
-					else if (trailer.nodeid == mission_focused_node) nodeTransmitSeq = nodeCount - 1;
-					else nodeTransmitSeq = trailer.nodeid + 1;
-				} else {
-					nodeTransmitSeq = trailer.nodeid + 1;
-				}
-				if(sync_count < 0xFF && (nodeTransmitSeq == (trailer.nodeid + 1) || nodeTransmitSeq == mission_focused_node)){
+				nodeTransmitSeq = trailer.nodeid + 1;
+				if(sync_count < 0xFF && nodeTransmitSeq == (trailer.nodeid + 1)){
 					sync_count += 1;
 				}
 				received_sync = true;
@@ -740,6 +761,16 @@ tdm_serial_loop(void)
 		if (tnow - last_link_update > 32768) {
 			link_update();
 			last_link_update = tnow;
+		}
+
+		// During active focused mission session, non-focused drones stay silent
+		// (receive-only) while still tracking sync beacons.
+		if ((mission_focused_node > BASE_NODEID) &&
+		    (mission_focused_node < (nodeCount - 1)) &&
+		    ((uint16_t)(tnow - mission_focused_expiry) < 60000UL) &&
+		    nodeId != BASE_NODEID &&
+		    nodeId != mission_focused_node) {
+			continue;
 		}
 
 		if (lbt_rssi != 0) {
@@ -948,13 +979,14 @@ tdm_serial_loop(void)
 		// if in sync mode and we are the base, add the channel and sync bit
 		if (tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
 			uint16_t sync_channel = get_transmit_channel() & 0x00FF;
-			trailer.nodeid = sync_channel | 0x8000;
-			bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
-			if (is_focused) {
-				trailer.nodeid |= ((mission_focused_node & 0x7F) << 8);
-			} else {
-				trailer.nodeid |= (0x7F << 8);
+			__pdata uint16_t fn = 0x7F;
+			__pdata bool focused_session_active = (mission_focused_node > BASE_NODEID &&
+					 mission_focused_node < (nodeCount - 1) &&
+					 (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
+			if (focused_session_active) {
+				fn = mission_focused_node & 0x7F;
 			}
+			trailer.nodeid = sync_channel | 0x8000 | (fn << 8);
 		} else {
 			trailer.nodeid = nodeId;
 		}
@@ -1271,6 +1303,7 @@ tdm_init(void)
 	// Clear Values..
 	trailer.nodeid  = 0xFFFF;
 	nodeTransmitSeq = 0xFFFF;
+	tdm_session_phase = 0;
 	memset(remote_statistics, 0, sizeof(remote_statistics));
 	memset(statistics, 0, sizeof(statistics));
 	
