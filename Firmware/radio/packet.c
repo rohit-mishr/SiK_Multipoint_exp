@@ -92,26 +92,40 @@ void packet_process_incoming(__xdata uint8_t * __pdata buf, __pdata uint8_t len,
 static void sniff_mission_upload(__xdata uint8_t * __pdata buf, __pdata uint8_t len)
 {
 	uint8_t msgid;
-	uint8_t target_sysid;
+	uint8_t target_sysid = 0;
+	uint8_t payload_offset;
+
 	if (len < 6) return;
 	if (buf[0] == MAVLINK09_STX || buf[0] == MAVLINK10_STX) {
 		msgid = buf[5];
-		target_sysid = buf[6];
+		payload_offset = 6;
 	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
-		msgid = buf[7]; 
-		target_sysid = buf[10];
+		msgid = buf[7]; // MAVLink 2 short MSGIDs
+		payload_offset = 10;
 	} else {
 		return;
 	}
 
-	// 39 = MISSION_ITEM, 40 = MISSION_REQUEST, 43 = MISSION_REQUEST_LIST, 44 = MISSION_COUNT
-	if (msgid == 39 || msgid == 40 || msgid == 43 || msgid == 44) {
-		if (target_sysid != 0 && sysid_to_nodeid[target_sysid] != 0) {
-			mission_focused_node = sysid_to_nodeid[target_sysid];
-			mission_focused_expiry = timer2_tick();
-		}
-	} else if (msgid == 47) { // MISSION_ACK
-		mission_focused_node = 0xFFFF;
+	// MAVLink sorts payload fields strictly by data type size (uint64 -> float -> uint16 -> uint8).
+	// Because of this, target_sysid is at DIFFERENT byte offsets depending on the message!
+	if (msgid == 43 || msgid == 47) { // 43:MISSION_REQUEST_LIST, 47:MISSION_ACK
+		if (len <= payload_offset) return;
+		target_sysid = buf[payload_offset];
+	} else if (msgid == 40 || msgid == 44 || msgid == 51) { // 40:MISSION_REQUEST, 44:MISSION_COUNT, 51:MISSION_REQUEST_INT
+		if (len <= payload_offset + 2) return;
+		target_sysid = buf[payload_offset + 2]; // Follows a 2-byte uint16_t field
+	} else if (msgid == 39 || msgid == 73) { // 39:MISSION_ITEM, 73:MISSION_ITEM_INT
+		if (len <= payload_offset + 32) return;
+		target_sysid = buf[payload_offset + 32]; // Follows 28 bytes of floats/ints and 4 bytes of uint16_t
+	} else {
+		return; // Not a relevant mission message
+	}
+
+	if (msgid == 47) { // MISSION_ACK
+		mission_focused_node = 0xFFFF; // Clear 2-Node strict prioritization gracefully
+	} else if (target_sysid != 0 && sysid_to_nodeid[target_sysid] != 0 && sysid_to_nodeid[target_sysid] != 0xFF) {
+		mission_focused_node = sysid_to_nodeid[target_sysid];
+		mission_focused_expiry = timer2_tick();
 	}
 }
 
