@@ -255,6 +255,7 @@ tdm_state_update(__pdata uint16_t tdelta)
 					tdm_session_phase = 0;
 				} else {
 					nodeTransmitSeq = mission_focused_node;
+					tdm_session_phase++;
 				}
 			} else if (current_slot_owner == mission_focused_node) {
 				nodeTransmitSeq = BASE_NODEID;
@@ -688,8 +689,23 @@ tdm_serial_loop(void)
 			}
 			// We dont want to sync off nodes sending bonus data
 			else if (sync_any && !trailer.bonus) {
-				nodeTransmitSeq = trailer.nodeid + 1;
-				if(sync_count < 0xFF && nodeTransmitSeq == (trailer.nodeid + 1)){
+				__pdata bool sync_focused_session_active = (mission_focused_node > BASE_NODEID &&
+						 mission_focused_node < (nodeCount - 1) &&
+						 (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
+				
+				if (sync_focused_session_active) {
+					if (trailer.nodeid == BASE_NODEID) {
+						nodeTransmitSeq = mission_focused_node;
+					} else if (trailer.nodeid == mission_focused_node) {
+						nodeTransmitSeq = BASE_NODEID;
+					} else {
+						nodeTransmitSeq = BASE_NODEID;
+					}
+				} else {
+					nodeTransmitSeq = trailer.nodeid + 1;
+				}
+
+				if(sync_count < 0xFF){
 					sync_count += 1;
 				}
 				received_sync = true;
