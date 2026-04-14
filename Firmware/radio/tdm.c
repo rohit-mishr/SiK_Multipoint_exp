@@ -245,7 +245,7 @@ tdm_state_update(__pdata uint16_t tdelta)
 		uint16_t current_slot_owner = nodeTransmitSeq;
 		if (current_slot_owner >= 0x8000) current_slot_owner = 0;
 
-		bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+		bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
 		if (current_slot_owner == nodeCount - 1) {
 			tdm_round_counter++;
 		}
@@ -660,7 +660,7 @@ tdm_serial_loop(void)
 			}
 			// We dont want to sync off nodes sending bonus data
 			else if (sync_any && !trailer.bonus) {
-				bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+				bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
 				if (is_focused && (tdm_round_counter % 10) != 0) {
 					if (trailer.nodeid == 0) nodeTransmitSeq = mission_focused_node;
 					else if (trailer.nodeid == mission_focused_node) nodeTransmitSeq = nodeCount - 1;
@@ -949,7 +949,7 @@ tdm_serial_loop(void)
 		if (tdm_state == TDM_SYNC && nodeId == BASE_NODEID) {
 			uint16_t sync_channel = get_transmit_channel() & 0x00FF;
 			trailer.nodeid = sync_channel | 0x8000;
-			bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 5*62500UL);
+			bool is_focused = (mission_focused_node < nodeCount && (uint16_t)(timer2_tick() - mission_focused_expiry) < 60000UL);
 			if (is_focused) {
 				trailer.nodeid |= ((mission_focused_node & 0x7F) << 8);
 			} else {

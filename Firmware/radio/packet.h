@@ -79,3 +79,6 @@ extern void packet_at_inject(void);
 ///			
 extern void packet_inject(__xdata uint8_t * __pdata buf, __pdata uint8_t len);
 
+extern uint16_t mission_focused_node;
+extern uint16_t mission_focused_expiry;
+extern void packet_process_incoming(__xdata uint8_t * __pdata buf, __pdata uint8_t len, __pdata uint16_t nodeid);
