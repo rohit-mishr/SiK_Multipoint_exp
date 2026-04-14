@@ -73,6 +73,48 @@ bool using_mavlink_10;
 
 #define MAVLINK09_STX 85 // 'U'
 #define MAVLINK10_STX 254
+#define MAVLINK20_STX 253
+
+__xdata uint8_t sysid_to_nodeid[256];
+uint16_t mission_focused_node = 0xFFFF;
+uint16_t mission_focused_expiry = 0;
+
+void packet_process_incoming(__xdata uint8_t * __pdata buf, __pdata uint8_t len, __pdata uint16_t nodeid)
+{
+	if (len < 6) return;
+	if (buf[0] == MAVLINK09_STX || buf[0] == MAVLINK10_STX) {
+		sysid_to_nodeid[buf[3]] = nodeid;
+	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
+		sysid_to_nodeid[buf[5]] = nodeid;
+	}
+}
+
+static void sniff_mission_upload(__xdata uint8_t * __pdata buf, __pdata uint8_t len)
+{
+	uint8_t msgid;
+	uint8_t target_sysid;
+	if (len < 6) return;
+	if (buf[0] == MAVLINK09_STX || buf[0] == MAVLINK10_STX) {
+		msgid = buf[5];
+		target_sysid = buf[6];
+	} else if (buf[0] == MAVLINK20_STX && len >= 10) {
+		msgid = buf[7]; 
+		target_sysid = buf[10];
+	} else {
+		return;
+	}
+
+	// 39 = MISSION_ITEM, 40 = MISSION_REQUEST, 43 = MISSION_REQUEST_LIST, 44 = MISSION_COUNT
+	if (msgid == 39 || msgid == 40 || msgid == 43 || msgid == 44) {
+		if (target_sysid != 0 && sysid_to_nodeid[target_sysid] != 0) {
+			mission_focused_node = sysid_to_nodeid[target_sysid];
+			mission_focused_expiry = timer2_tick();
+		}
+	} else if (msgid == 47) { // MISSION_ACK
+		mission_focused_node = 0xFFFF;
+	}
+}
+
 
 // check if a buffer looks like a MAVLink heartbeat packet - this
 // is used to determine if we will inject RADIO status MAVLink
@@ -88,6 +130,11 @@ static void check_heartbeat(__xdata uint8_t * __pdata buf)
 	} else if (buf[0] == MAVLINK10_STX &&
 		   buf[1] == 9 && buf[5] == 0) {
 		// looks like a MAVLink 1.0 heartbeat
+		using_mavlink_10 = true;
+		seen_mavlink = true;
+	} else if (buf[0] == MAVLINK20_STX &&
+		   buf[1] == 9 && buf[7] == 0) {
+		// looks like a MAVLink 2.0 heartbeat
 		using_mavlink_10 = true;
 		seen_mavlink = true;
 	}
@@ -113,7 +160,7 @@ uint8_t mavlink_frame(uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 	// buffer that we can fit in this packet
 	while (slen >= 8) {
 		register uint8_t c = serial_peek();
-		if (c != MAVLINK09_STX && c != MAVLINK10_STX) {
+		if (c != MAVLINK09_STX && c != MAVLINK10_STX && c != MAVLINK20_STX) {
 			// its not a MAVLink packet
 			return last_sent_len;			
 		}
@@ -129,7 +176,11 @@ uint8_t mavlink_frame(uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 			break;
 		}
 
-		c += 8;
+		if (c == MAVLINK20_STX) {
+			c += 12;
+		} else {
+			c += 8;
+		}
 
 		// we can add another MAVLink frame to the packet
 		serial_read_buf(&last_sent[last_sent_len], c);
@@ -172,6 +223,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 		memcpy(buf, last_sent, last_sent_len);
 		slen = last_sent_len;
 		last_sent_len = 0;
+		if (slen > 0) sniff_mission_upload(buf, slen);
 		return (slen & 0xFF);
 	}
 	last_sent_is_resend = false;
@@ -187,6 +239,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 		memcpy(buf, last_sent, last_sent_len);
 		injected_packet = false;
 		last_sent_is_injected = true;
+		if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 		return last_sent_len;
 	}
 	last_sent_is_injected = false;
@@ -212,6 +265,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 		} else {
 			last_sent_len = 0;
 		}
+		if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 		return last_sent_len;
 	}
 
@@ -225,6 +279,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 				last_sent[last_sent_len++] = serial_read();
 				memcpy(buf, last_sent, last_sent_len);				
 				mav_pkt_len = 0;
+				if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 				return last_sent_len;
 			}
 			// still waiting ....
@@ -245,6 +300,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 				last_sent_len = slen;
 				memcpy(buf, last_sent, last_sent_len);
 				mav_pkt_len = 0;
+				if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 				return last_sent_len;
 			}
 			// leave it in the serial buffer till we have the
@@ -253,12 +309,14 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 		}
 		
 		// the whole of the MAVLink packet is available
-		return mavlink_frame(max_xmit, buf);
+		uint8_t ret_len = mavlink_frame(max_xmit, buf);
+		if (ret_len > 0) sniff_mission_upload(buf, ret_len);
+		return ret_len;
 	}
 		
 	while (slen > 0) {
 		register uint8_t c = serial_peek();
-		if (c == MAVLINK09_STX || c == MAVLINK10_STX) {
+		if (c == MAVLINK09_STX || c == MAVLINK10_STX || c == MAVLINK20_STX) {
 			if (slen == 1) {
 				// we got a bare MAVLink header byte
 				if (last_sent_len == 0) {
@@ -283,7 +341,11 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 
 			// the length byte doesn't include
 			// the header or CRC
-			mav_pkt_len += 8;
+			if (c == MAVLINK20_STX) {
+				mav_pkt_len += 12;
+			} else {
+				mav_pkt_len += 8;
+			}
 			
 			if (last_sent_len != 0) {
 				// send what we've got so far,
@@ -292,6 +354,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 				memcpy(buf, last_sent, last_sent_len);
 				mav_pkt_start_time = timer2_tick();
 				mav_pkt_max_time = mav_pkt_len * serial_rate;
+				if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 				return last_sent_len;
 			} else if (mav_pkt_len > slen) {
 				// the whole MAVLink packet isn't in
@@ -302,7 +365,9 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 			} else {
 				// the whole packet is there
 				// and ready to be read
-				return mavlink_frame(max_xmit, buf);
+				uint8_t ret_len = mavlink_frame(max_xmit, buf);
+				if (ret_len > 0) sniff_mission_upload(buf, ret_len);
+				return ret_len;
 			}
 		} else {
 			last_sent[last_sent_len++] = serial_read();
@@ -311,6 +376,7 @@ packet_get_next(register uint8_t max_xmit, __xdata uint8_t * __pdata buf)
 	}
 
 	memcpy(buf, last_sent, last_sent_len);
+	if (last_sent_len > 0) sniff_mission_upload(buf, last_sent_len);
 	return last_sent_len;
 }
 
