@@ -19,4 +19,8 @@ Firmware/tools/node_sender.py
 Firmware/tools/sik_at.py
 Firmware/tools/stress_sender.py
 Firmware/tools/stress_test.py
+.codex
+sik_base_node.py
+sik_ota.py
+test_crc.py
 *.xcodeproj
