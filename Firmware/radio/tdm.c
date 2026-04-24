@@ -1007,7 +1007,7 @@ tdm_serial_loop(void)
 }
 
 bool
-tdm_state_sync()
+tdm_state_sync(void)
 {
 	return received_sync;
 }

@@ -91,56 +91,58 @@ param_check(__pdata enum ParamID id, __data uint32_t val)
 	if (id >= PARAM_MAX)
 		return false;
 
-	switch (id) {
-		case PARAM_FORMAT:
-			return false;
-
-		case PARAM_SERIAL_SPEED:
-			return serial_device_valid_speed(val);
-
-		case PARAM_AIR_SPEED:
-			if (val > 256)
-				return false;
-			break;
-
-		// NodeDestination can be set to broadcast 65535 otherwise must be a node id.
-		case PARAM_NODEDESTINATION:
-			if(val == 0xFFFF) 
-				return true;
-			else if(parameter_values[PARAM_NODEID] == val)
-				return false;
-			// NOTE THERE IS NO BREAK HERE, THIS IS INTENTIONAL
-		
-		// Can not assign above the node count
-		case PARAM_NODEID:
-			if(val >= parameter_values[PARAM_NODECOUNT])
-				return false;
-			break;
-			
-		// Can not assign id above 32,767 upper most bit is sync
-		case PARAM_NODECOUNT:
-			if(val < 2 && val > 0x8000)
-			  return false;
-			break;
-		
-		case PARAM_TXPOWER:
-			if (val > BOARD_MAXTXPOWER)
-				return false;
-			break;
-
-		case PARAM_ECC:
-		case PARAM_MAVLINK:
-		case PARAM_OPPRESEND:
-		case PARAM_SYNCANY:
-			// boolean 0/1 only
-			if (val > 1)
-				return false;
-			break;
-
-		default:
-			// no sanity check for this value
-			break;
+	if (id == PARAM_FORMAT) {
+		return false;
 	}
+
+	if (id == PARAM_SERIAL_SPEED) {
+		return serial_device_valid_speed(val);
+	}
+
+	if (id == PARAM_AIR_SPEED) {
+		if (val > 256)
+			return false;
+		return true;
+	}
+
+	// NodeDestination can be set to broadcast 65535 otherwise must be a node id.
+	if (id == PARAM_NODEDESTINATION) {
+		if (val == 0xFFFF)
+			return true;
+		if (parameter_values[PARAM_NODEID] == val)
+			return false;
+		id = PARAM_NODEID;
+	}
+
+	// Can not assign above the node count
+	if (id == PARAM_NODEID) {
+		if (val >= parameter_values[PARAM_NODECOUNT])
+			return false;
+		return true;
+	}
+
+	// Can not assign id above 32,767 upper most bit is sync
+	if (id == PARAM_NODECOUNT) {
+		if (val < 2 && val > 0x8000)
+			return false;
+		return true;
+	}
+
+	if (id == PARAM_TXPOWER) {
+		if (val > BOARD_MAXTXPOWER)
+			return false;
+		return true;
+	}
+
+	if (id == PARAM_ECC ||
+	    id == PARAM_MAVLINK ||
+	    id == PARAM_OPPRESEND ||
+	    id == PARAM_SYNCANY) {
+		// boolean 0/1 only
+		if (val > 1)
+			return false;
+	}
+
 	return true;
 }
 
@@ -417,7 +419,7 @@ calibration_get(uint8_t level) __reentrant
 }
 
 bool
-calibration_lock() __reentrant
+calibration_lock(void) __reentrant
 {
 	uint8_t idx;
 	uint8_t crc = 0;

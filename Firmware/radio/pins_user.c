@@ -81,7 +81,7 @@ pins_user_init(void)
 }
 
 void
-pin_user_change_check()
+pin_user_change_check(void)
 {
 //    __pdata uint8_t i = pins_user_get_adc(5);
 //

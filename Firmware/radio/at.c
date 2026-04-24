@@ -215,7 +215,7 @@ at_timer(void)
 #pragma restore
 
 static uint32_t
-at_parse_number() __reentrant
+at_parse_number(void) __reentrant
 {
 	uint32_t	reg;
 	uint8_t		c;
