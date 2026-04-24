@@ -267,27 +267,27 @@ radio_init(void)
 	switch (g_board_frequency) {
 	case FREQ_433:
 		freq_min = 433050000UL;
-		freq_max = 434790000UL;
+		freq_max = freq_min;
 		txpower = 10;
-		num_fh_channels = 10;
+		num_fh_channels = 1;
 		break;
 	case FREQ_470:
 		freq_min = 470000000UL;
-		freq_max = 471000000UL;
+		freq_max = freq_min;
 		txpower = 10;
-		num_fh_channels = 10;
+		num_fh_channels = 1;
 		break;
 	case FREQ_868:
 		freq_min = 868000000UL;
-		freq_max = 869000000UL;
+		freq_max = freq_min;
 		txpower = 10;
-		num_fh_channels = 10;
+		num_fh_channels = 1;
 		break;
 	case FREQ_915:
 		freq_min = 915000000UL;
-		freq_max = 928000000UL;
+		freq_max = freq_min;
 		txpower = 27;
-			num_fh_channels = 20; //MAX_FREQ_CHANNELS;
+		num_fh_channels = 1;
 		break;
 	default:
 		freq_min = 0;
@@ -297,18 +297,16 @@ radio_init(void)
 		break;
 	}
 
-	if (param_get(PARAM_NUM_CHANNELS) != 0) {
-		num_fh_channels = param_get(PARAM_NUM_CHANNELS);
-	}
 	if (param_get(PARAM_MIN_FREQ) != 0) {
 		freq_min        = param_get(PARAM_MIN_FREQ) * 1000UL;
-	}
-	if (param_get(PARAM_MAX_FREQ) != 0) {
-		freq_max        = param_get(PARAM_MAX_FREQ) * 1000UL;
 	}
 	if (param_get(PARAM_TXPOWER) != 0) {
 		txpower = param_get(PARAM_TXPOWER);
 	}
+
+	// This firmware build uses a single fixed frequency with no hopping.
+	freq_max = freq_min;
+	num_fh_channels = 1;
 
 	// constrain power and channels
 	txpower = constrain(txpower, BOARD_MINTXPOWER, BOARD_MAXTXPOWER);
@@ -337,10 +335,6 @@ radio_init(void)
 		break;
 	}
 
-	if (freq_max == freq_min) {
-		freq_max = freq_min + 1000000UL;
-	}
-
 	// get the duty cycle we will use
 	duty_cycle = param_get(PARAM_DUTY_CYCLE);
 	duty_cycle = constrain(duty_cycle, 0, 100);
@@ -356,24 +350,12 @@ radio_init(void)
 
 	// sanity checks
 	param_set(PARAM_MIN_FREQ, freq_min/1000);
-	param_set(PARAM_MAX_FREQ, freq_max/1000);
+	param_set(PARAM_MAX_FREQ, freq_min/1000);
 	param_set(PARAM_NUM_CHANNELS, num_fh_channels);
 
-	channel_spacing = (freq_max - freq_min) / (num_fh_channels+2);
-
-	// add half of the channel spacing, to ensure that we are well
-	// away from the edges of the allowed range
-	freq_min += channel_spacing/2;
-
-	// add another offset based on network ID. This means that
-	// with different network IDs we will have much lower
-	// interference
-	srand(param_get(PARAM_NETID));
-	if (num_fh_channels > 5) {
-		freq_min += ((unsigned long)(rand()*625)) % channel_spacing;
-	}
+	channel_spacing = 0;
 	debug("freq low=%lu high=%lu spacing=%lu\n", 
-	       freq_min, freq_min+(num_fh_channels*channel_spacing), 
+	       freq_min, freq_min,
 	       channel_spacing);
 
 	// set the frequency and channel spacing
@@ -383,8 +365,8 @@ radio_init(void)
 	// set channel spacing
 	radio_set_channel_spacing(channel_spacing);
 
-	// start on a channel chosen by network ID
-	radio_set_channel(param_get(PARAM_NETID) % num_fh_channels);
+	// fixed-frequency mode always stays on channel 0
+	radio_set_channel(0);
 
 	// And intilise the radio with them.
 	if (!radio_configure(param_get(PARAM_AIR_SPEED)) &&
@@ -428,4 +410,3 @@ radio_init(void)
 	// initialise TDM system
 	tdm_init();
 }
-
