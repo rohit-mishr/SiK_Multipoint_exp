@@ -24,3 +24,4 @@ sik_base_node.py
 sik_ota.py
 test_crc.py
 *.xcodeproj
+__pycache__
